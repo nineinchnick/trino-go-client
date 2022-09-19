@@ -128,6 +128,7 @@ const (
 
 	trinoAddedPrepareHeader       = trinoHeaderPrefix + `Added-Prepare`
 	trinoDeallocatedPrepareHeader = trinoHeaderPrefix + `Deallocated-Prepare`
+	trinoNextURIHeader            = trinoHeaderPrefix + `Next-Uri`
 
 	KerberosEnabledConfig    = "KerberosEnabled"
 	kerberosKeytabPathConfig = "KerberosKeytabPath"
@@ -607,7 +608,6 @@ func (st *driverStmt) ExecContext(ctx context.Context, args []driver.NamedValue)
 		ctx:          ctx,
 		stmt:         st,
 		queryID:      sr.ID,
-		nextURI:      sr.NextURI,
 		rowsAffected: sr.UpdateCount,
 		statsCh:      st.statsCh,
 		doneCh:       st.doneCh,
@@ -721,7 +721,6 @@ func (st *driverStmt) QueryContext(ctx context.Context, args []driver.NamedValue
 		ctx:     ctx,
 		stmt:    st,
 		queryID: sr.ID,
-		nextURI: sr.NextURI,
 		statsCh: st.statsCh,
 		doneCh:  st.doneCh,
 	}
@@ -845,6 +844,14 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 				if resp == nil {
 					return
 				}
+				nextUri := resp.Header.Get(trinoNextURIHeader)
+				if nextUri != "" {
+					select {
+					case st.nextURIs <- nextUri:
+					case <-st.doneCh:
+						return
+					}
+				}
 				var qresp queryResponse
 				d := json.NewDecoder(resp.Body)
 				d.UseNumber()
@@ -863,10 +870,12 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 					st.errors <- err
 					return
 				}
-				select {
-				case st.nextURIs <- qresp.NextURI:
-				case <-st.doneCh:
-					return
+				if nextUri == "" {
+					select {
+					case st.nextURIs <- qresp.NextURI:
+					case <-st.doneCh:
+						return
+					}
 				}
 				select {
 				case st.queryResponses <- qresp:
@@ -915,7 +924,6 @@ type driverRows struct {
 	ctx     context.Context
 	stmt    *driverStmt
 	queryID string
-	nextURI string
 
 	err          error
 	rowindex     int
@@ -955,7 +963,6 @@ func (qr *driverRows) Close() error {
 	if err != nil {
 		qferr, ok := err.(*ErrQueryFailed)
 		if ok && qferr.StatusCode == http.StatusNoContent {
-			qr.nextURI = ""
 			return nil
 		}
 		return err
@@ -1008,10 +1015,6 @@ func (qr *driverRows) Next(dest []driver.Value) error {
 		return qr.err
 	}
 	if qr.columns == nil || qr.rowindex >= len(qr.data) {
-		if qr.nextURI == "" {
-			qr.err = io.EOF
-			return qr.err
-		}
 		if err := qr.fetch(); err != nil {
 			qr.err = err
 			return err
