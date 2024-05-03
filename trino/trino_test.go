@@ -302,10 +302,14 @@ func TestQueryForUsername(t *testing.T) {
 }
 
 type TestQueryProgressCallback struct {
+	logger    func(format string, args ...any)
 	statusMap map[time.Time]string
 }
 
 func (qpc *TestQueryProgressCallback) Update(qpi QueryProgressInfo) {
+	if qpc.logger != nil {
+		qpc.logger("Progress: %.2f", qpi.QueryStats.ProgressPercentage)
+	}
 	qpc.statusMap[time.Now()] = qpi.QueryStats.State
 }
 
@@ -355,6 +359,7 @@ func TestQueryProgressWithCallbackPeriod(t *testing.T) {
 
 	statusMap := make(map[time.Time]string)
 	progressUpdater := &TestQueryProgressCallback{
+		logger:    t.Logf,
 		statusMap: statusMap,
 	}
 	progressUpdaterPeriod, err := time.ParseDuration("1ms")
@@ -1725,6 +1730,8 @@ func BenchmarkQuery(b *testing.B) {
 	})
 
 	q := `SELECT * FROM tpch.sf1.orders LIMIT 10000000`
+
+	b.ResetTimer()
 	for n := 0; n < b.N; n++ {
 		rows, err := db.Query(q)
 		require.NoError(b, err)
@@ -1732,6 +1739,37 @@ func BenchmarkQuery(b *testing.B) {
 		}
 		rows.Close()
 	}
+}
+
+func BenchmarkShortQueries(b *testing.B) {
+	c := &Config{
+		ServerURI:         *integrationServerFlag,
+		SessionProperties: map[string]string{"query_priority": "1"},
+	}
+
+	dsn, err := c.FormatDSN()
+	require.NoError(b, err)
+
+	db, err := sql.Open("trino", dsn)
+	require.NoError(b, err)
+
+	b.Cleanup(func() {
+		assert.NoError(b, db.Close())
+	})
+
+	q := `SELECT 1`
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			rows, err := db.Query(q)
+			require.NoError(b, err)
+			for rows.Next() {
+			}
+			require.NoError(b, rows.Err())
+			require.NoError(b, rows.Close())
+		}
+	})
 }
 
 func TestExec(t *testing.T) {

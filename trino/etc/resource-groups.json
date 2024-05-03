@@ -1,0 +1,17 @@
+{
+  "rootGroups": [
+    {
+      "name": "global",
+      "softMemoryLimit": "80%",
+      "hardConcurrencyLimit": 2,
+      "maxQueued": 1000,
+      "schedulingPolicy": "weighted",
+      "jmxExport": true
+    }
+  ],
+  "selectors": [
+    {
+      "group": "global"
+    }
+  ]
+}
